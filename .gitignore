@@ -1,0 +1,20 @@
+# Credenciais — nunca commitar
+.config
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Saídas locais (opcional: remova a linha se quiser versionar exemplos)
+*_api.csv
+*Copia*
+*copy*
+*.xlsx
+logs_demissao/
+relatorio_*.json
+relatorio_*.csv
+relatorio_integracao_*.json
+erros_*.json
