@@ -169,20 +169,34 @@ python3 funcionarios.py csv
 # ou: python3 main.py   (integração completa — cuidado em produção)
 ```
 
-### Agendamento no VPS (cron)
+### Agendamento no VPS (cron) — `integrador.sh`
+
+Preferir **`integrador.sh`** (executa `python main.py` com código do Git), **não** o binário `IntegradorEcontadorHevi.unknown` (código congelado na compilação).
 
 ```bash
-mkdir -p /opt/hevi-integracao/logs
+cd /home/gogotech/integracao/hevi
+chmod +x integrador.sh
 crontab -e
 ```
 
-Exemplo (diário 02:15):
+Substituir a linha antiga do Hevi por:
 
 ```cron
-15 2 * * * cd /opt/hevi-integracao && . .venv/bin/activate && /usr/bin/python3 main.py >> /opt/hevi-integracao/logs/cron.log 2>&1
+*/30 * * * * cd /home/gogotech/integracao/hevi && flock -n /tmp/integrador_hevi.lock ./integrador.sh >> /home/gogotech/integracao/hevi/integrador.log 2>&1
 ```
 
-Use caminho absoluto do `python` do venv se preferir: `/opt/hevi-integracao/.venv/bin/python`.
+Rotação de log (ajustar caminho se `rotaciona_log.sh` estiver em `hevi/`):
+
+```cron
+0 3 * * * /home/gogotech/integracao/hevi/rotaciona_log.sh
+```
+
+Teste manual antes do cron:
+
+```bash
+cd /home/gogotech/integracao/hevi
+./integrador.sh
+```
 
 ### Firewall
 
