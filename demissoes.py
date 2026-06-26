@@ -6,7 +6,205 @@ import time
 import configparser
 import xml.etree.ElementTree as ET
 import os
-from config_reader import obter_headers_api, ler_token_config
+from config_reader import obter_headers_api, ler_token_config, ler_config
+from funcionarios import gerar_token_target, formatar_cpf_11_digitos
+
+NOME_ARQUIVO_CSV = "demissoes_api.csv"
+ARQUIVO_HISTORICO_MATRICULAS = "demissoes_matricula_processados.txt"
+
+COLUNAS_CSV_DEMISSOES = [
+    "campo_chave",
+    "cpf",
+    "matricula",
+    "nome",
+    "DATA_DEMISSAO",
+    "obs",
+    "data_aviso",
+    "data_ultimo_dia_trabalhado",
+    "data_acerto",
+    "motivo",
+    "local_exame",
+    "opcao_empregado",
+    "tipo_aviso",
+    "devolveu_cracha",
+    "dias_indenizados",
+    "data_exame",
+]
+
+def formatar_matricula_simples(codigo):
+    """Matricula no padrao atual da integracao: 6 digitos com zeros a esquerda."""
+    if codigo is None or str(codigo).strip() == "":
+        return ""
+    return str(codigo).strip().zfill(6)
+
+
+def ler_campo_chave_config():
+    """Chave de identificacao no ifPonto. Padrao: matricula."""
+    cfg = ler_config()
+    if cfg and "APITARGET" in cfg:
+        chave = (cfg["APITARGET"].get("campo_chave") or "matricula").strip().strip('"').strip("'")
+        return chave.lower() if chave else "matricula"
+    return "matricula"
+
+
+def formatar_cpf_com_mascara_csv(cpf):
+    """CPF opcional no CSV (XXX.XXX.XXX-XX). Nao e usado como chave nesta integracao."""
+    digitos = formatar_cpf_11_digitos(cpf)
+    if len(digitos) != 11:
+        return ""
+    return f"{digitos[:3]}.{digitos[3:6]}.{digitos[6:9]}-{digitos[9:]}"
+
+
+def carregar_matriculas_demissoes_processadas():
+    if not os.path.exists(ARQUIVO_HISTORICO_MATRICULAS):
+        return set()
+    matriculas = set()
+    try:
+        with open(ARQUIVO_HISTORICO_MATRICULAS, "r", encoding="utf-8") as f:
+            for linha in f:
+                mat = formatar_matricula_simples(linha.strip())
+                if mat:
+                    matriculas.add(mat)
+    except OSError as e:
+        print(f"AVISO: nao foi possivel ler {ARQUIVO_HISTORICO_MATRICULAS}: {e}")
+    return matriculas
+
+
+def registrar_matriculas_demissoes_processadas(matriculas_novas):
+    novas = []
+    for matricula in matriculas_novas:
+        norm = formatar_matricula_simples(matricula)
+        if norm:
+            novas.append(norm)
+    if not novas:
+        return
+    atual = carregar_matriculas_demissoes_processadas()
+    atual.update(novas)
+    try:
+        with open(ARQUIVO_HISTORICO_MATRICULAS, "w", encoding="utf-8") as f:
+            for mat in sorted(atual):
+                f.write(mat + "\n")
+        print(
+            f"\nHistorico de matriculas atualizado (+{len(novas)}): "
+            f"{ARQUIVO_HISTORICO_MATRICULAS} ({len(atual)} no total)."
+        )
+    except OSError as e:
+        print(f"ERRO ao gravar historico de matriculas: {e}")
+
+
+def ler_pag_demissao_rest():
+    """Le [APITARGET].pag_demissao (opcional). Padrao: funcionario_demissao."""
+    cfg = ler_config()
+    if not cfg or "APITARGET" not in cfg:
+        return "funcionario_demissao"
+    pag = (cfg["APITARGET"].get("pag_demissao") or "").strip().strip('"').strip("'")
+    return pag if pag else "funcionario_demissao"
+
+
+def preparar_csv_para_rest(nome_arquivo_csv=NOME_ARQUIVO_CSV):
+    """Garante colunas exigidas pelo REST e matricula com 6 digitos."""
+    df = pd.read_csv(nome_arquivo_csv, sep=";", encoding="utf-8-sig", dtype=str)
+    df = df.fillna("")
+
+    if "campo_chave" not in df.columns:
+        df.insert(0, "campo_chave", ler_campo_chave_config())
+    else:
+        df["campo_chave"] = df["campo_chave"].replace("", ler_campo_chave_config())
+
+    if "cpf" not in df.columns:
+        df.insert(1, "cpf", "")
+    if "nome" not in df.columns:
+        pos = df.columns.get_loc("matricula") + 1 if "matricula" in df.columns else 1
+        df.insert(pos, "nome", "")
+
+    if "matricula" in df.columns:
+        df["matricula"] = df["matricula"].apply(formatar_matricula_simples)
+
+    for coluna in COLUNAS_CSV_DEMISSOES:
+        if coluna not in df.columns:
+            df[coluna] = ""
+
+    df = df[COLUNAS_CSV_DEMISSOES]
+    df.to_csv(nome_arquivo_csv, index=False, encoding="utf-8-sig", sep=";")
+    return nome_arquivo_csv
+
+
+def enviar_csv_demissoes_rest(nome_arquivo_csv=NOME_ARQUIVO_CSV):
+    """Envia demissoes_api.csv via REST (mesmo padrao de funcionarios/afastamentos)."""
+    if not os.path.exists(nome_arquivo_csv):
+        print(f"Arquivo {nome_arquivo_csv} nao encontrado!")
+        return False
+
+    preparar_csv_para_rest(nome_arquivo_csv)
+    print(f"Arquivo {nome_arquivo_csv} encontrado e normalizado para REST")
+
+    config_target, token_final = gerar_token_target()
+    if not config_target or not token_final:
+        print("Falha ao gerar token para API de destino")
+        return False
+
+    pag = ler_pag_demissao_rest()
+    usuario = config_target["integracao"]
+    headers = {"user": usuario, "token": token_final}
+    data = {"pag": pag, "cmd": "importar_cad", "separador": ";"}
+
+    try:
+        print("Enviando POST de demissoes via REST...")
+        print(f"URL: {config_target['url']}")
+        print(f"Usuario: {usuario}")
+        print(f"pag: {pag}")
+        print(f"Token: {token_final[:32]}...")
+
+        with open(nome_arquivo_csv, "rb") as arquivo:
+            files = {"arquivo": (nome_arquivo_csv, arquivo, "text/csv")}
+            response = requests.post(
+                config_target["url"],
+                data=data,
+                files=files,
+                headers=headers,
+                timeout=90,
+            )
+
+        print(f"Status da resposta: {response.status_code}")
+
+        if response.status_code == 200:
+            try:
+                resultado = response.json()
+                if resultado.get("success") is False:
+                    print("API retornou erro:")
+                    print(json.dumps(resultado, indent=2, ensure_ascii=False))
+                    return False
+
+                print("POST de demissoes realizado com sucesso!")
+                print(json.dumps(resultado, indent=2, ensure_ascii=False))
+
+                erros_api = resultado.get("erros") or []
+                ok_count = int(resultado.get("ok") or 0)
+                ja_cad = int(resultado.get("ja_cad") or 0)
+
+                if erros_api:
+                    print(f"API reportou {len(erros_api)} erro(s) no lote.")
+                    if ok_count or ja_cad:
+                        print(f"Parcial: ok={ok_count}, ja_cad={ja_cad}")
+                    return False
+
+                if ok_count:
+                    print(f"{ok_count} registro(s) processado(s) conforme retorno da API.")
+                elif ja_cad:
+                    print(f"{ja_cad} registro(s) ja cadastrado(s) no destino.")
+                return True
+            except json.JSONDecodeError:
+                print(f"Resposta nao e JSON valido: {response.text[:500]}...")
+                return False
+
+        print(f"ERRO no POST - Status: {response.status_code}")
+        print(f"Resposta: {response.text[:500]}...")
+        return False
+
+    except requests.exceptions.RequestException as e:
+        print(f"ERRO na requisicao: {e}")
+        return False
+
 
 def carregar_configuracoes_soap():
     """
@@ -145,37 +343,38 @@ def calcular_datas_demissao(data_demissao_iso):
 
 def mapear_demissao_para_csv(funcionario_demitido, headers=None):
     """
-    Mapeia funcionário demitido da API para o formato esperado no CSV
-    ATUALIZADO: Agora usa dados diretos dos funcionários demitidos
+    Mapeia funcionario demitido da API para o CSV de demissao (REST ifPonto).
+    Chave de integracao: matricula (codigo Alterdata, 6 digitos).
     """
-    attributes = funcionario_demitido.get('attributes', {})
-    funcionario_id = funcionario_demitido.get('id', '')
-    
-    # Dados já disponíveis na consulta principal
-    codigo = attributes.get('codigo', funcionario_id)
-    matricula = str(codigo).zfill(6)  # Formatar com zeros à esquerda
-    data_demissao_iso = attributes.get('demissao', '')
-    
-    # Calcular datas baseadas na data real de demissão
+    attributes = funcionario_demitido.get("attributes", {})
+    funcionario_id = funcionario_demitido.get("id", "")
+
+    codigo = attributes.get("codigo", funcionario_id)
+    matricula = formatar_matricula_simples(codigo)
+    data_demissao_iso = attributes.get("demissao", "")
+    campo_chave = ler_campo_chave_config()
+
     data_demissao, data_aviso, data_ultimo_dia, data_acerto = calcular_datas_demissao(data_demissao_iso)
-    
-    # Mapeamento dos campos conforme a query original
+
     demissao_csv = {
-        'matricula': matricula,  # Código do funcionário formatado
-        'DATA_DEMISSAO': data_demissao,  # Data real de demissão
-        'obs': 'Demissão',  # Valor fixo
-        'data_aviso': data_aviso,  # 30 dias antes da demissão
-        'data_ultimo_dia_trabalhado': data_ultimo_dia,  # Mesmo dia da demissão
-        'data_acerto': data_acerto,  # 10 dias após demissão
-        'motivo': 'Demissão',  # Valor fixo
-        'local_exame': '',  # Campo vazio conforme query
-        'opcao_empregado': '',  # Campo vazio conforme query
-        'tipo_aviso': 'Indenizado',  # Tipo padrão
-        'devolveu_cracha': 'Sim',  # Valor padrão
-        'dias_indenizados': 0,  # Valor padrão
-        'data_exame': ''  # Campo vazio conforme query
+        "campo_chave": campo_chave,
+        "cpf": formatar_cpf_com_mascara_csv(attributes.get("cpf", "")),
+        "matricula": matricula,
+        "nome": (attributes.get("nome") or "").strip(),
+        "DATA_DEMISSAO": data_demissao,
+        "obs": "Demissao",
+        "data_aviso": "",
+        "data_ultimo_dia_trabalhado": data_ultimo_dia,
+        "data_acerto": "",
+        "motivo": "Demissao",
+        "local_exame": "",
+        "opcao_empregado": "",
+        "tipo_aviso": "",
+        "devolveu_cracha": "Sim",
+        "dias_indenizados": 0,
+        "data_exame": "",
     }
-    
+
     return demissao_csv
 
 def filtrar_demissoes_recentes(funcionarios_demitidos, data_limite='2025-01-01'):
@@ -255,83 +454,81 @@ def salvar_xml_demissao(xml_data, matricula, tipo="request"):
     print(f"📄 XML de demissão ({tipo}) salvo em: {filepath}")
     return filepath
 
+def _extrair_resultado_soap(root):
+    """Extrai descricao e codigo-retorno do XML de resposta ifPonto."""
+    descricao = None
+    codigo_retorno = None
+
+    for elem in root.iter():
+        tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
+        if tag == 'descricao' and elem.text:
+            descricao = elem.text.strip()
+        elif tag == 'codigo-retorno' and elem.text:
+            codigo_retorno = elem.text.strip()
+
+    return descricao, codigo_retorno
+
 def analisar_resposta_soap(resposta_xml):
     """
-    Analisa a resposta XML do SOAP para determinar se foi bem-sucedida
+    Analisa a resposta XML do SOAP.
+
+    Retorna tupla (status, mensagem):
+      - 'sucesso'  -> demissão cadastrada agora
+      - 'ja_existe' -> já estava no ifPonto (não é falha de integração)
+      - 'erro'     -> falha real (funcionário não encontrado, etc.)
     """
     try:
-        # Parse do XML
         root = ET.fromstring(resposta_xml)
-        
-        # Namespaces baseados na resposta real
+
         namespaces = {
             'soap-env': 'http://schemas.xmlsoap.org/soap/envelope/',
+            'SOAP-ENV': 'http://schemas.xmlsoap.org/soap/envelope/',
             'ns1': 'urn:ifPonto'
         }
-        
-        # Procurar por SOAP Fault primeiro
-        soap_fault = root.find('.//soap-env:Fault', namespaces) or root.find('.//Fault')
+
+        soap_fault = (
+            root.find('.//soap-env:Fault', namespaces)
+            or root.find('.//SOAP-ENV:Fault', namespaces)
+            or root.find('.//Fault')
+        )
         if soap_fault is not None:
             fault_string = soap_fault.find('faultstring')
             fault_msg = fault_string.text if fault_string is not None else "Erro SOAP desconhecido"
-            return False, f"SOAP Fault: {fault_msg}"
-        
-        # Procurar por ResultArray e result
-        result_array = root.find('.//ns1:ResultArray', namespaces)
-        if result_array is not None:
-            results = result_array.findall('ns1:result', namespaces)
-            
-            if results:
-                for result in results:
-                    # Procurar por descrição
-                    descricao_elem = result.find('ns1:descricao', namespaces)
-                    if descricao_elem is not None:
-                        descricao = descricao_elem.text
-                        
-                        if descricao:
-                            descricao_lower = descricao.lower()
-                            
-                            # Indicadores de sucesso
-                            sucessos = ['sucesso', 'ok', 'processado', 'realizado', 'concluido', 'gravado', 'salvo', 'demitido']
-                            if any(palavra in descricao_lower for palavra in sucessos):
-                                return True, descricao
-                            
-                            # Indicadores de erro
-                            erros = ['erro', 'falha', 'inválido', 'negado', 'não encontrado', 'já existe']
-                            if any(palavra in descricao_lower for palavra in erros):
-                                return False, descricao
-                    
-                    # Procurar por outros campos
-                    for campo in ['ns1:status', 'ns1:codigo', 'ns1:retorno']:
-                        elem = result.find(campo, namespaces)
-                        if elem is not None:
-                            valor = elem.text
-                            
-                            if valor and valor.lower() in ['ok', 'sucesso', '1', 'true', 'sim']:
-                                return True, valor
-                            elif valor and valor.lower() in ['erro', 'falha', '0', 'false', 'nao', 'não']:
-                                return False, valor
-                
-                return True, "Resposta processada sem erros aparentes"
-        
-        # Procurar qualquer elemento que possa indicar resultado
-        for elem in root.iter():
-            tag_name = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
-            if elem.text and any(campo in tag_name.lower() for campo in ['result', 'response', 'return']):
-                
-                if elem.text:
-                    texto_lower = elem.text.lower()
-                    if any(palavra in texto_lower for palavra in ['sucesso', 'ok', 'processado']):
-                        return True, elem.text
-                    elif any(palavra in texto_lower for palavra in ['erro', 'falha', 'inválido']):
-                        return False, elem.text
-        
-        return True, "Status indeterminado - XML válido sem SOAP Fault"
-            
+            return 'erro', f"SOAP Fault: {fault_msg}"
+
+        descricao, codigo_retorno = _extrair_resultado_soap(root)
+
+        if descricao:
+            descricao_lower = descricao.lower()
+
+            if any(p in descricao_lower for p in ['já cadastrada', 'ja cadastrada', 'já existe', 'ja existe']):
+                return 'ja_existe', descricao
+
+            if any(p in descricao_lower for p in [
+                'nao encontrado', 'não encontrado', 'nao localizado', 'não localizado',
+                'erro', 'falha', 'inválido', 'invalido', 'negado', 'rejeitado'
+            ]):
+                return 'erro', descricao
+
+            if any(p in descricao_lower for p in [
+                'sucesso', 'ok', 'processado', 'realizado', 'concluido', 'concluído',
+                'gravado', 'salvo', 'cadastrada com', 'demissão cadastrada', 'demissao cadastrada'
+            ]):
+                return 'sucesso', descricao
+
+        if codigo_retorno:
+            codigo = codigo_retorno.strip()
+            if codigo in ('0', '200', '201'):
+                return 'sucesso', descricao or f"Código {codigo}"
+            if codigo == '303' and descricao:
+                return 'ja_existe', descricao
+
+        return 'erro', descricao or "Resposta SOAP sem descrição reconhecida"
+
     except ET.ParseError as e:
-        return False, f"Erro de parse XML: {e}"
+        return 'erro', f"Erro de parse XML: {e}"
     except Exception as e:
-        return False, f"Erro na análise: {e}"
+        return 'erro', f"Erro na análise: {e}"
 
 def enviar_demissoes_via_soap(demissoes_csv):
     """
@@ -353,6 +550,7 @@ def enviar_demissoes_via_soap(demissoes_csv):
     print(f"   Usuário: {soap_config['usuario']}")
     
     sucessos = 0
+    ja_cadastrados = 0
     erros = 0
     
     print(f"\n📤 Processando {len(demissoes_csv)} demissões via SOAP...")
@@ -381,23 +579,25 @@ def enviar_demissoes_via_soap(demissoes_csv):
         resposta = enviar_demissao_soap(xml_demissao, soap_config['url'])
         
         if resposta and resposta.status_code == 200:
-            print(f"✅ Requisição enviada com sucesso!")
-            print(f"📊 Status HTTP: {resposta.status_code}")
+            print(f"✅ Requisição enviada (HTTP {resposta.status_code})")
             
             # Salvar XML da resposta
             salvar_xml_demissao(resposta.text, matricula, "response")
             
-            # Analisar a resposta XML
-            sucesso, mensagem = analisar_resposta_soap(resposta.text)
+            status, mensagem = analisar_resposta_soap(resposta.text)
             
-            if sucesso:
+            if status == 'sucesso':
                 sucessos += 1
-                print(f"🎉 Demissão da matrícula {matricula} processada com sucesso!")
+                print(f"🎉 Demissão da matrícula {matricula} cadastrada com sucesso!")
                 print(f"✅ Mensagem: {mensagem}")
+            elif status == 'ja_existe':
+                ja_cadastrados += 1
+                print(f"ℹ️  Matrícula {matricula} já estava cadastrada no ifPonto")
+                print(f"   Mensagem: {mensagem}")
             else:
+                erros += 1
                 print(f"❌ Erro no processamento da matrícula {matricula}")
                 print(f"❌ Mensagem: {mensagem}")
-                erros += 1
                 
         else:
             print(f"❌ Erro ao enviar demissão {i}")
@@ -411,11 +611,12 @@ def enviar_demissoes_via_soap(demissoes_csv):
     
     # Resumo final
     print(f"\n📊 RESUMO DO ENVIO SOAP:")
-    print(f"✅ Sucessos: {sucessos}")
+    print(f"🎉 Novas demissões cadastradas: {sucessos}")
+    print(f"ℹ️  Já cadastradas (sem ação): {ja_cadastrados}")
     print(f"❌ Erros: {erros}")
     print(f"📊 Total processadas: {len(demissoes_csv)}")
     
-    return sucessos > 0
+    return erros == 0 or (sucessos + ja_cadastrados) > 0
 
 # =================== FUNÇÃO PRINCIPAL ===================
 
@@ -450,41 +651,62 @@ def gerar_csv_demissoes():
         demissoes_filtradas = funcionarios_demitidos
     
     print(f"\n🔄 Convertendo {len(demissoes_filtradas)} demissões para formato CSV...")
-    print("   (Usando dados reais de demissão da API)")
-    
+    print(f"   Chave de integracao: {ler_campo_chave_config()} | matricula = codigo Alterdata (6 digitos)")
+
+    matriculas_ja_exportadas = carregar_matriculas_demissoes_processadas()
+    print(
+        f"\nHistorico de matriculas ja processadas ({ARQUIVO_HISTORICO_MATRICULAS}): "
+        f"{len(matriculas_ja_exportadas)} registro(s)."
+    )
+
     # Converter para formato CSV
     demissoes_csv = []
+    matriculas_para_registrar = []
     erros = []
     funcionarios_processados = set()
-    
+    ignorados_historico = 0
+
     for i, funcionario_demitido in enumerate(demissoes_filtradas, 1):
         try:
             demissao_csv = mapear_demissao_para_csv(funcionario_demitido, headers)
-            
-            # Filtrar apenas registros com matrícula válida
-            if demissao_csv['matricula']:
+            matricula = demissao_csv["matricula"]
+
+            if matricula and matricula in matriculas_ja_exportadas:
+                ignorados_historico += 1
+                continue
+
+            if matricula:
                 demissoes_csv.append(demissao_csv)
-                funcionarios_processados.add(demissao_csv['matricula'])
-            
+                funcionarios_processados.add(matricula)
+                matriculas_para_registrar.append(matricula)
+
             if i % 10 == 0:
-                print(f"  ✅ Processadas {i}/{len(demissoes_filtradas)} demissões... (Funcionários: {len(funcionarios_processados)})")
-                
+                print(
+                    f"  ✅ Processadas {i}/{len(demissoes_filtradas)} demissões... "
+                    f"(Novas no CSV: {len(demissoes_csv)})"
+                )
+
         except Exception as e:
-            erros.append({'id': funcionario_demitido.get('id', 'N/A'), 'erro': str(e)})
+            erros.append({"id": funcionario_demitido.get("id", "N/A"), "erro": str(e)})
             print(f"  ❌ Erro ao processar funcionário {funcionario_demitido.get('id', 'N/A')}: {e}")
-    
+
+    print(f"\nFiltro de historico: {ignorados_historico} ignorado(s) (matricula ja exportada).")
+
     if not demissoes_csv:
-        print("❌ Nenhuma rescisão foi convertida com sucesso")
-        return None
-    
+        print("ℹ️  Nenhuma demissao nova para exportar (todas ja constam no historico).")
+        df_vazio = pd.DataFrame(columns=COLUNAS_CSV_DEMISSOES)
+        df_vazio.to_csv(NOME_ARQUIVO_CSV, index=False, encoding="utf-8-sig", sep=";")
+        print(f"✅ CSV vazio gerado: {NOME_ARQUIVO_CSV}")
+        return []
+
     # Criar DataFrame
     print(f"\n📊 Criando DataFrame com {len(demissoes_csv)} demissões...")
     print(f"   👥 Funcionários únicos demitidos: {len(funcionarios_processados)}")
-    
-    df = pd.DataFrame(demissoes_csv)
-    
+
+    df = pd.DataFrame(demissoes_csv, columns=COLUNAS_CSV_DEMISSOES)
+
     # Gerar arquivo CSV
-    nome_arquivo = "demissoes_api.csv"
+    nome_arquivo = NOME_ARQUIVO_CSV
     
     try:
         df.to_csv(nome_arquivo, index=False, encoding='utf-8-sig', sep=';')
@@ -511,11 +733,11 @@ def gerar_csv_demissoes():
         # Salvar relatório de erros se houver
         if erros:
             arquivo_erros = "erros_demissoes.json"
-            with open(arquivo_erros, 'w', encoding='utf-8') as f:
+            with open(arquivo_erros, "w", encoding="utf-8") as f:
                 json.dump(erros, f, indent=2, ensure_ascii=False)
             print(f"\n⚠️  Relatório de erros salvo em: {arquivo_erros}")
-        
-        return demissoes_csv  # Retornar dados para uso no SOAP
+
+        return demissoes_csv
         
     except Exception as e:
         print(f"❌ Erro ao gerar CSV: {e}")
@@ -558,59 +780,145 @@ def validar_dados_demissoes_csv(nome_arquivo):
                 print(f"  📅 {campo}: {registros_com_data} registros com data")
         
         # Verificar funcionários únicos
-        if 'matricula' in df.columns:
-            funcionarios_unicos = df['matricula'].nunique()
+        if "matricula" in df.columns:
+            funcionarios_unicos = df["matricula"].nunique()
             print(f"  👥 Funcionários únicos demitidos: {funcionarios_unicos}")
+
+        if "campo_chave" in df.columns:
+            chaves = df["campo_chave"].fillna("").astype(str).str.strip().unique()
+            print(f"  🔑 campo_chave no CSV: {', '.join(ch for ch in chaves if ch) or 'matricula'}")
         
         print(f"  ✅ Validação concluída")
         
     except Exception as e:
         print(f"  ❌ Erro na validação: {e}")
 
+def processar_apenas_exportacao_csv():
+    """Gera demissoes_api.csv sem enviar via REST/SOAP."""
+    print("=" * 80)
+    print("   EXPORTAR APENAS CSV DE DEMISSOES (sem envio)")
+    print("=" * 80)
+    demissoes_csv = gerar_csv_demissoes()
+    if demissoes_csv is None:
+        print("Falha na geracao do CSV.")
+        return False
+    validar_dados_demissoes_csv(NOME_ARQUIVO_CSV)
+    print(f"\nArquivo pronto: {NOME_ARQUIVO_CSV} ({len(demissoes_csv)} linha(s) nova(s))")
+    return True
+
+
+def processar_integracao_soap():
+    """Fluxo legado: API -> CSV -> SOAP (um a um)."""
+    print("=" * 80)
+    print("    INTEGRACAO DE DEMISSOES - eContador -> CSV -> SOAP (legado)")
+    print("=" * 80)
+
+    demissoes_csv = gerar_csv_demissoes()
+    if demissoes_csv is None:
+        print("Falha na geracao dos dados. Processo interrompido.")
+        return False
+
+    validar_dados_demissoes_csv(NOME_ARQUIVO_CSV)
+
+    if len(demissoes_csv) == 0:
+        print("\nNenhuma demissao nova no CSV; envio SOAP ignorado.")
+        return True
+
+    sucesso_soap = enviar_demissoes_via_soap(demissoes_csv)
+    if sucesso_soap:
+        print("\nIntegracao SOAP finalizada.")
+        return True
+
+    print("\nFalha no envio via SOAP.")
+    return False
+
+
 def processar_integracao_completa():
     """
-    Função principal que executa todo o processo: API → CSV → SOAP
+    Fluxo principal: API eContador -> CSV -> REST ifPonto (importar_cad).
     """
     print("=" * 80)
-    print("    🚀 INTEGRAÇÃO COMPLETA DE DEMISSÕES - eContador → CSV → SOAP")
+    print("    INTEGRACAO DE DEMISSOES - eContador -> CSV -> REST (ifPonto)")
     print("=" * 80)
     
     # Etapa 1: Gerar CSV das demissões
     print("\n📋 ETAPA 1: Coletando demissões da API eContador...")
     demissoes_csv = gerar_csv_demissoes()
     
-    if not demissoes_csv:
+    if demissoes_csv is None:
         print("❌ Falha na geração dos dados. Processo interrompido.")
         return False
     
     # Etapa 2: Validar dados do CSV
     print("\n🔍 ETAPA 2: Validando dados...")
-    validar_dados_demissoes_csv("demissoes_api.csv")
-    
-    # Etapa 3: Enviar via SOAP
-    print("\n📤 ETAPA 3: Enviando demissões via SOAP...")
-    sucesso_soap = enviar_demissoes_via_soap(demissoes_csv)
-    
-    if sucesso_soap:
-        print("\n🎉 INTEGRAÇÃO COMPLETA FINALIZADA COM SUCESSO!")
-        print(f"✅ Demissões coletadas da API eContador")
-        print(f"✅ CSV gerado: demissoes_api.csv")
-        print(f"✅ Demissões enviadas via SOAP")
-        print(f"📁 XMLs salvos em: logs_demissao/")
+    validar_dados_demissoes_csv(NOME_ARQUIVO_CSV)
+
+    if len(demissoes_csv) == 0:
+        print("\nℹ️  Nenhuma demissao nova no CSV; envio REST ignorado.")
+        print(
+            f"   Matriculas ja constam em {ARQUIVO_HISTORICO_MATRICULAS}. "
+            "Remova linha(s) do historico para reprocessar."
+        )
         return True
-    else:
-        print("\n💥 FALHA NA INTEGRAÇÃO!")
-        print(f"✅ CSV gerado: demissoes_api.csv")
-        print(f"❌ Falha no envio via SOAP")
-        return False
+    
+    # Etapa 3: Enviar via REST
+    print("\n📤 ETAPA 3: Enviando CSV de demissões via REST...")
+    pag_atual = ler_pag_demissao_rest()
+    print(f"   pag (configuravel em [APITARGET] pag_demissao): {pag_atual}")
+    sucesso_rest = enviar_csv_demissoes_rest(NOME_ARQUIVO_CSV)
+    
+    if sucesso_rest:
+        registrar_matriculas_demissoes_processadas(
+            [d["matricula"] for d in demissoes_csv if d.get("matricula")]
+        )
+        print("\n🎉 INTEGRAÇÃO COMPLETA FINALIZADA COM SUCESSO!")
+        print("✅ Demissões coletadas da API eContador")
+        print(f"✅ CSV gerado: {NOME_ARQUIVO_CSV}")
+        print(f"✅ Arquivo enviado via REST (pag={pag_atual})")
+        return True
+
+    print("\n💥 FALHA NA INTEGRAÇÃO!")
+    print(f"✅ CSV gerado: {NOME_ARQUIVO_CSV}")
+    print("❌ Falha no envio via REST — confira pag_demissao em [APITARGET]")
+    return False
 
 # Exemplo de uso
 if __name__ == "__main__":
-    # EXECUTAR AUTOMATICAMENTE O PROCESSO COMPLETO
-    print("🚀 Executando integração completa de demissões...")
+    import sys
+
+    if len(sys.argv) > 1:
+        comando = sys.argv[1].lower()
+
+        if comando in ("csv", "somente-csv", "export", "exportar"):
+            ok = processar_apenas_exportacao_csv()
+            sys.exit(0 if ok else 1)
+
+        if comando in ("enviar", "rest", "upload"):
+            nome_arquivo = sys.argv[2] if len(sys.argv) > 2 else NOME_ARQUIVO_CSV
+            if not os.path.exists(nome_arquivo):
+                print(f"Arquivo {nome_arquivo} nao encontrado!")
+                sys.exit(1)
+            pag_atual = ler_pag_demissao_rest()
+            print(f"Enviando {nome_arquivo} via REST (pag={pag_atual})")
+            ok = enviar_csv_demissoes_rest(nome_arquivo)
+            if ok:
+                df = pd.read_csv(nome_arquivo, sep=";", encoding="utf-8-sig", dtype=str)
+                if "matricula" in df.columns:
+                    registrar_matriculas_demissoes_processadas(df["matricula"].tolist())
+            sys.exit(0 if ok else 1)
+
+        if comando == "soap":
+            ok = processar_integracao_soap()
+            sys.exit(0 if ok else 1)
+
+        print("Comando invalido. Use: csv | enviar [arquivo.csv] | soap")
+        sys.exit(1)
+
+    print("Executando integracao completa de demissoes (REST)...")
     sucesso = processar_integracao_completa()
-    
+
     if sucesso:
-        print("\n✅ Integração finalizada com sucesso!")
+        print("\nIntegracao finalizada com sucesso!")
     else:
-        print("\n❌ Integração finalizada com erros!")
+        print("\nIntegracao finalizada com erros!")
+    sys.exit(0 if sucesso else 1)
