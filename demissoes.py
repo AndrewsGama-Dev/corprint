@@ -129,6 +129,36 @@ def preparar_csv_para_rest(nome_arquivo_csv=NOME_ARQUIVO_CSV):
     return nome_arquivo_csv
 
 
+def analisar_resultado_rest_demissoes(resultado):
+    """
+    Interpreta o JSON da API REST no mesmo espirito dos outros modulos (funcionarios, etc.).
+    success=true conta como sucesso do modulo, mesmo com avisos em erros[].
+    """
+    if resultado.get("success") is False:
+        return False
+
+    ok_count = int(resultado.get("ok") or 0)
+    ja_cad = int(resultado.get("ja_cad") or 0)
+    erros_api = resultado.get("erros") or []
+    info = (resultado.get("info") or "").strip()
+
+    if info:
+        print(f"Resumo API: {info}")
+
+    if ok_count:
+        print(f"{ok_count} registro(s) cadastrado(s) no destino.")
+    if ja_cad:
+        print(f"{ja_cad} registro(s) ja existiam no destino.")
+
+    if erros_api:
+        print(f"AVISO: API reportou {len(erros_api)} mensagem(ns) em erros[] (modulo segue como sucesso).")
+        if len(erros_api) <= 5:
+            for item in erros_api:
+                print(f"   - {item}")
+
+    return True
+
+
 def enviar_csv_demissoes_rest(nome_arquivo_csv=NOME_ARQUIVO_CSV):
     """Envia demissoes_api.csv via REST (mesmo padrao de funcionarios/afastamentos)."""
     if not os.path.exists(nome_arquivo_csv):
@@ -177,22 +207,7 @@ def enviar_csv_demissoes_rest(nome_arquivo_csv=NOME_ARQUIVO_CSV):
 
                 print("POST de demissoes realizado com sucesso!")
                 print(json.dumps(resultado, indent=2, ensure_ascii=False))
-
-                erros_api = resultado.get("erros") or []
-                ok_count = int(resultado.get("ok") or 0)
-                ja_cad = int(resultado.get("ja_cad") or 0)
-
-                if erros_api:
-                    print(f"API reportou {len(erros_api)} erro(s) no lote.")
-                    if ok_count or ja_cad:
-                        print(f"Parcial: ok={ok_count}, ja_cad={ja_cad}")
-                    return False
-
-                if ok_count:
-                    print(f"{ok_count} registro(s) processado(s) conforme retorno da API.")
-                elif ja_cad:
-                    print(f"{ja_cad} registro(s) ja cadastrado(s) no destino.")
-                return True
+                return analisar_resultado_rest_demissoes(resultado)
             except json.JSONDecodeError:
                 print(f"Resposta nao e JSON valido: {response.text[:500]}...")
                 return False
