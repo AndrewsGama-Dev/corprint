@@ -57,3 +57,26 @@ def obter_headers_api():
     }
     
     return headers
+
+
+def ler_codigo_empresa_filtro():
+    """
+    Lê o ID da empresa a filtrar na seção [FILTROS] do .config.
+
+    Returns:
+        str | None: ID da empresa (ex.: "129") ou None se não configurado
+                    (integração traz funcionários de todas as empresas).
+    """
+    try:
+        config = ler_config()
+        if not config or 'FILTROS' not in config:
+            return None
+
+        codigo = (config['FILTROS'].get('codigo_empresa') or '').strip().strip('"')
+        if not codigo:
+            return None
+
+        return codigo
+    except Exception as e:
+        print(f"❌ Erro ao ler codigo_empresa do .config: {e}")
+        return None

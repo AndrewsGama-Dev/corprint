@@ -8,7 +8,7 @@ import time
 import hashlib
 import pytz
 import configparser
-from config_reader import obter_headers_api, ler_token_config
+from config_reader import obter_headers_api, ler_token_config, ler_codigo_empresa_filtro
 
 
 def salvar_dataframe_csv_funcionarios(df, nome_preferido="funcionarios_api.csv"):
@@ -515,6 +515,7 @@ def consultar_todos_funcionarios_para_csv():
     """
     Coleta APENAS funcionários ATIVOS da API, com include dos relacionamentos
     (sexo, estado civil, nacionalidade, naturalidade, estado/UF, escolaridade quando disponível).
+    Se [FILTROS].codigo_empresa estiver no .config, restringe àquela empresa.
     """
     print("🔍 INICIANDO COLETA DE FUNCIONÁRIOS ATIVOS PARA CSV...")
     
@@ -522,6 +523,12 @@ def consultar_todos_funcionarios_para_csv():
     if not headers:
         print("❌ Não foi possível obter o token do arquivo .config")
         return [], None, {}
+
+    codigo_empresa = ler_codigo_empresa_filtro()
+    if codigo_empresa:
+        print(f"🏭 Filtro de empresa ativo: codigo_empresa={codigo_empresa}")
+    else:
+        print("🏭 Sem filtro de empresa ([FILTROS].codigo_empresa vazio) — todas as empresas")
     
     base_url = "https://dp.pack.alterdata.com.br/api/v1/funcionarios"
     
@@ -532,6 +539,9 @@ def consultar_todos_funcionarios_para_csv():
         "page[limit]": "100",
         "include": INCLUDE_FUNCIONARIOS_OPCIONAL_ESCOLARIDADE,
     }
+    if codigo_empresa:
+        # filter[empresa.id] restringe na API (validado: ~145 ativos na Corprint id=129)
+        params["filter[empresa.id]"] = codigo_empresa
     
     todos_funcionarios = []
     included_global = {}
