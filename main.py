@@ -30,7 +30,7 @@ try:
     import funcionarios
     import afastamentos
     import demissoes
-    from config_reader import ler_config, ler_token_config
+    from config_reader import ler_config, ler_token_config, ler_modulos_habilitados
 except ImportError as e:
     print(f"❌ ERRO: Não foi possível importar um dos módulos necessários: {e}")
     print("📝 Certifique-se de que todos os arquivos estão no mesmo diretório:")
@@ -183,25 +183,33 @@ def gerar_relatorio_final(resultados):
     print(f"\n{'='*80}")
     print("📊 RELATÓRIO FINAL DA INTEGRAÇÃO COMPLETA")
     print(f"{'='*80}")
-    
-    sucessos = sum(1 for r in resultados if r['sucesso'])
-    falhas = len(resultados) - sucessos
+
+    executados = [r for r in resultados if not r.get('pulado')]
+    pulados = [r for r in resultados if r.get('pulado')]
+    sucessos = sum(1 for r in executados if r['sucesso'])
+    falhas = sum(1 for r in executados if not r['sucesso'])
     tempo_total = sum(r['duracao_segundos'] for r in resultados)
     
     print(f"\n📈 RESUMO GERAL:")
-    print(f"   ✅ Módulos executados com sucesso: {sucessos}/{len(resultados)}")
-    print(f"   ❌ Módulos com falha: {falhas}/{len(resultados)}")
+    print(f"   ✅ Módulos executados com sucesso: {sucessos}/{len(executados)}")
+    print(f"   ❌ Módulos com falha: {falhas}/{len(executados)}")
+    print(f"   ⏭️  Módulos pulados ([MODULOS]=false): {len(pulados)}")
     print(f"   ⏱️  Tempo total de execução: {tempo_total:.1f} segundos ({tempo_total/60:.1f} minutos)")
     print(f"   📅 Data/hora da execução: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
     
     print(f"\n📋 DETALHES POR MÓDULO:")
     for resultado in resultados:
-        status = "✅ SUCESSO" if resultado['sucesso'] else "❌ FALHA"
+        if resultado.get('pulado'):
+            status = "⏭️  PULADO"
+        elif resultado['sucesso']:
+            status = "✅ SUCESSO"
+        else:
+            status = "❌ FALHA"
         duracao = resultado['duracao_segundos']
         
         print(f"   {status} {resultado['modulo']:<15} - {resultado['descricao']:<30} ({duracao:5.1f}s)")
         
-        if not resultado['sucesso'] and 'erro' in resultado:
+        if not resultado['sucesso'] and not resultado.get('pulado') and 'erro' in resultado:
             print(f"      💥 Erro: {resultado['erro']}")
     
     # Salvar relatório em arquivo
@@ -210,6 +218,7 @@ def gerar_relatorio_final(resultados):
             'data_hora': datetime.now().isoformat(),
             'sucessos': sucessos,
             'falhas': falhas,
+            'pulados': len(pulados),
             'tempo_total_segundos': tempo_total,
             'tempo_total_minutos': round(tempo_total / 60, 2)
         },
@@ -243,13 +252,17 @@ def gerar_relatorio_final(resultados):
         else:
             print(f"   ❌ {arquivo:<25} (não encontrado)")
     
-    if sucessos == len(resultados):
-        print(f"\n🎉 INTEGRAÇÃO COMPLETA FINALIZADA COM 100% DE SUCESSO!")
-        print(f"   Todos os {len(resultados)} módulos foram executados com sucesso.")
+    if len(executados) == 0:
+        print(f"\n⚠️  NENHUM MÓDULO HABILITADO!")
+        print(f"   Todos os módulos estão com false em [MODULOS] no .config.")
+        return False
+    if falhas == 0:
+        print(f"\n🎉 INTEGRAÇÃO FINALIZADA COM SUCESSO!")
+        print(f"   {sucessos} módulo(s) executado(s), {len(pulados)} pulado(s).")
         return True
     elif sucessos > 0:
         print(f"\n⚠️  INTEGRAÇÃO PARCIALMENTE CONCLUÍDA!")
-        print(f"   {sucessos} módulos executados com sucesso, {falhas} falharam.")
+        print(f"   {sucessos} módulos executados com sucesso, {falhas} falharam, {len(pulados)} pulados.")
         print(f"   Verifique os logs acima para identificar os problemas.")
         return False
     else:
@@ -278,16 +291,36 @@ def main():
             ('afastamentos', afastamentos, 'Registro de Afastamentos'),
             ('demissoes', demissoes, 'Processamento de Demissões')
         ]
+
+        modulos_cfg = ler_modulos_habilitados()
+        print(f"\n🎛️  MÓDULOS NO .config [MODULOS]:")
+        for nome, _, _ in sequencia_modulos:
+            flag = "ON " if modulos_cfg.get(nome, True) else "OFF"
+            print(f"   [{flag}] {nome}")
         
         print(f"\n🚀 INICIANDO INTEGRAÇÃO COMPLETA...")
-        print(f"📊 Total de módulos a executar: {len(sequencia_modulos)}")
+        a_executar = sum(1 for nome, _, _ in sequencia_modulos if modulos_cfg.get(nome, True))
+        print(f"📊 Módulos habilitados: {a_executar}/{len(sequencia_modulos)}")
         
         resultados = []
         inicio_geral = time.time()
         
-        # Executar cada módulo na sequência
+        # Executar cada módulo na sequência (respeitando [MODULOS])
         for i, (nome_modulo, modulo, descricao) in enumerate(sequencia_modulos, 1):
             print(f"\n📍 PROGRESSO: {i}/{len(sequencia_modulos)} módulos")
+
+            if not modulos_cfg.get(nome_modulo, True):
+                print(f"\n⏭️  PULANDO: {nome_modulo.upper()} - {descricao}")
+                print(f"   Motivo: [MODULOS] {nome_modulo} = false no .config")
+                resultados.append({
+                    'modulo': nome_modulo,
+                    'descricao': descricao,
+                    'sucesso': True,
+                    'pulado': True,
+                    'duracao_segundos': 0,
+                    'timestamp': datetime.now().isoformat()
+                })
+                continue
             
             resultado = executar_modulo(nome_modulo, modulo, descricao)
             resultados.append(resultado)

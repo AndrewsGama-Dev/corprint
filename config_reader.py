@@ -80,3 +80,52 @@ def ler_codigo_empresa_filtro():
     except Exception as e:
         print(f"❌ Erro ao ler codigo_empresa do .config: {e}")
         return None
+
+
+def _parse_bool_config(valor, default=True):
+    """Interpreta true/false, 1/0, sim/nao, yes/no (case insensitive)."""
+    if valor is None:
+        return default
+    texto = str(valor).strip().strip('"').lower()
+    if texto in ('true', '1', 'yes', 'y', 'sim', 's', 'on'):
+        return True
+    if texto in ('false', '0', 'no', 'n', 'nao', 'não', 'off'):
+        return False
+    return default
+
+
+MODULOS_PADRAO = (
+    'empresas',
+    'departamentos',
+    'cargos',
+    'funcionarios',
+    'afastamentos',
+    'demissoes',
+)
+
+
+def ler_modulos_habilitados():
+    """
+    Lê a seção [MODULOS] do .config (true/false por módulo).
+
+    Se a seção não existir, todos os módulos ficam habilitados (compatibilidade).
+    """
+    habilitados = {nome: True for nome in MODULOS_PADRAO}
+    try:
+        config = ler_config()
+        if not config or 'MODULOS' not in config:
+            return habilitados
+
+        secao = config['MODULOS']
+        for nome in MODULOS_PADRAO:
+            if nome in secao:
+                habilitados[nome] = _parse_bool_config(secao.get(nome), default=True)
+        return habilitados
+    except Exception as e:
+        print(f"❌ Erro ao ler [MODULOS] do .config: {e}")
+        return habilitados
+
+
+def modulo_habilitado(nome_modulo):
+    """Retorna True se o módulo deve ser executado conforme [MODULOS]."""
+    return bool(ler_modulos_habilitados().get(nome_modulo, True))

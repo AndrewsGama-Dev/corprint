@@ -1,6 +1,9 @@
 # Atualizar integração no servidor
 
-Projeto em Python: copiar código, manter `.config` e dependências alinhadas ao `requirements.txt`.
+Projeto em Python: **corprint** — copiar código, manter `.config` e dependências alinhadas ao `requirements.txt`.
+
+**Caminho no servidor:** `/home/gogotech/integracao/corprint`  
+**Repositório:** https://github.com/AndrewsGama-Dev/corprint.git
 
 ## 1. Antes de atualizar
 
@@ -29,8 +32,7 @@ Projeto em Python: copiar código, manter `.config` e dependências alinhadas ao
 Na pasta da integração:
 
 ```bash
-# Exemplo Linux
-cd /caminho/hevi-integracao
+cd /home/gogotech/integracao/corprint
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
@@ -61,14 +63,14 @@ Confirme se `configparser` está disponível (vem na biblioteca padrão do Pytho
 Na pasta onde está o `.config`:
 
 ```bash
-# Só funcionários CSV (sem Hevi), se já usarem esse fluxo:
-python funcionarios.py csv
+# Só funcionários CSV (sem envio ao destino), se já usarem esse fluxo:
+python3 funcionarios.py csv
 
-# Integração completa (cuidado: envia dados à Hevi / SOAP onde aplicável):
-python main.py
+# Integração completa (cuidado: envia dados ao destino / SOAP onde aplicável):
+python3 main.py
 ```
 
-Ajustar o comando ao interpretador correto (`python` vs `python3` vs `.venv/scripts/python`).
+Ajustar o comando ao interpretador correto (`python` vs `python3` vs `.venv/bin/python`).
 
 ## 5. Agendamento
 
@@ -77,7 +79,7 @@ Ajustar o comando ao interpretador correto (`python` vs `python3` vs `.venv/scri
 
 ```cron
 # Exemplo: todo dia às 02:15
-15 2 * * * cd /opt/hevi-integracao && . .venv/bin/activate && python main.py >> logs/cron.log 2>&1
+15 2 * * * cd /home/gogotech/integracao/corprint && . .venv/bin/activate && python main.py >> logs/cron.log 2>&1
 ```
 
 ## 6. Transporte dos arquivos
@@ -90,16 +92,16 @@ Formas usuais: **Git** (pull no VPS), **rsync** ou **scp** por SSH, **SFTP** (Wi
 
 ## 6.1 VPS Linux — subir ou atualizar o código (SSH)
 
-Substitua `USUARIO`, `IP_DO_VPS` e `/opt/hevi-integracao` pelos valores reais.
+Caminho fixo desta integração: `/home/gogotech/integracao/corprint`
 
 ### Primeira vez no VPS (preparar pasta e venv)
 
-Conecte: `ssh USUARIO@IP_DO_VPS`
+Conecte: `ssh gogotech@IP_DO_VPS`
 
 ```bash
-sudo mkdir -p /opt/hevi-integracao
-sudo chown "$USER:$USER" /opt/hevi-integracao
-cd /opt/hevi-integracao
+mkdir -p /home/gogotech/integracao/corprint
+cd /home/gogotech/integracao/corprint
+git clone https://github.com/AndrewsGama-Dev/corprint.git .
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
@@ -107,11 +109,11 @@ pip install -U pip
 pip install requests pandas pytz
 ```
 
-Crie o **`.config`** direto no VPS (nano/vi) ou copie **uma vez** do seu PC:
+Crie o **`.config`** direto no VPS (nano/vi) ou copie **uma vez** do seu PC (incluir `[FILTROS] codigo_empresa = 129`):
 
 ```bash
 # No seu computador (exemplo scp do Windows PowerShell ou Linux):
-scp .config USUARIO@IP_DO_VPS:/opt/hevi-integracao/.config
+scp .config gogotech@IP_DO_VPS:/home/gogotech/integracao/corprint/.config
 ```
 
 ### Opção A — Atualizar com **Git** (recomendado)
@@ -121,9 +123,7 @@ scp .config USUARIO@IP_DO_VPS:/opt/hevi-integracao/.config
 **No VPS:**
 
 ```bash
-cd /opt/hevi-integracao
-# Se ainda não for um clone:
-# git clone https://github.com/SUA_ORG/hevi-integracao.git .
+cd /home/gogotech/integracao/corprint
 git pull origin main
 source .venv/bin/activate
 pip install -r requirements.txt || pip install -U requests pandas pytz
@@ -145,7 +145,7 @@ rsync -avz --delete \
   --exclude '*.pyc' \
   --exclude 'logs_demissao' \
   --exclude '*.csv' \
-  ./hevi-integracao/ USUARIO@IP_DO_VPS:/opt/hevi-integracao/
+  ./corprint/ gogotech@IP_DO_VPS:/home/gogotech/integracao/corprint/
 ```
 
 **Depois no VPS:** `ssh` + `source .venv/bin/activate` + `pip install ...` como acima.
@@ -156,13 +156,13 @@ Compacte a pasta **sem** incluir `.config` de desenvolvimento se for substituir 
 
 ```powershell
 # Exemplo: enviar pasta inteira (atenção: pode sobrescrever .config — faça backup no VPS antes)
-scp -r C:\caminho\hevi-integracao\* USUARIO@IP_DO_VPS:/opt/hevi-integracao/
+scp -r C:\caminho\corprint\* gogotech@IP_DO_VPS:/home/gogotech/integracao/corprint/
 ```
 
 ### Checklist pós-deploy no VPS
 
 ```bash
-cd /opt/hevi-integracao
+cd /home/gogotech/integracao/corprint
 test -f .config && echo "OK .config existe" || echo "FALTA .config"
 source .venv/bin/activate
 python3 funcionarios.py csv
@@ -171,43 +171,43 @@ python3 funcionarios.py csv
 
 ### Agendamento no VPS (cron) — `integrador.sh`
 
-Preferir **`integrador.sh`** (executa `python main.py` com código do Git), **não** o binário `IntegradorEcontadorHevi.unknown` (código congelado na compilação).
+Preferir **`integrador.sh`** (executa `python main.py` com código do Git).
 
 ```bash
-cd /home/gogotech/integracao/hevi
+cd /home/gogotech/integracao/corprint
 chmod +x integrador.sh
 crontab -e
 ```
 
-Substituir a linha antiga do Hevi por:
+Exemplo de linha no cron:
 
 ```cron
-*/30 * * * * cd /home/gogotech/integracao/hevi && flock -n /tmp/integrador_hevi.lock ./integrador.sh >> /home/gogotech/integracao/hevi/integrador.log 2>&1
+*/30 * * * * cd /home/gogotech/integracao/corprint && flock -n /tmp/integrador_corprint.lock ./integrador.sh >> /home/gogotech/integracao/corprint/integrador.log 2>&1
 ```
 
-Rotação de log (ajustar caminho se `rotaciona_log.sh` estiver em `hevi/`):
+Rotação de log (se existir `rotaciona_log.sh`):
 
 ```cron
-0 3 * * * /home/gogotech/integracao/hevi/rotaciona_log.sh
+0 3 * * * /home/gogotech/integracao/corprint/rotaciona_log.sh
 ```
 
 Teste manual antes do cron:
 
 ```bash
-cd /home/gogotech/integracao/hevi
+cd /home/gogotech/integracao/corprint
 ./integrador.sh
 ```
 
 ### Firewall
 
-Garantir saída **HTTPS (443)** para APIs Alterdata/Hevi e URL do SOAP. Nada a abrir na entrada se o script só inicia conexões de saída.
+Garantir saída **HTTPS (443)** para APIs Alterdata/destino e URL do SOAP. Nada a abrir na entrada se o script só inicia conexões de saída.
 
 ---
 
 ## 7. Rollback
 
-Se algo falhar, restaurar a pasta inteira do **backup** do passo 1 e só então revisar erro (versão Python, permissões na pasta OneDrive no servidor, token expirado no `.config`, etc.).
+Se algo falhar, restaurar a pasta inteira do **backup** do passo 1 e só então revisar erro (versão Python, permissões, token expirado no `.config`, etc.).
 
 ---
 
-*Documento genérico: adapte caminhos, usuário e política de credenciais da sua infraestrutura.*
+*Integração corprint — caminho padrão: `/home/gogotech/integracao/corprint`*
