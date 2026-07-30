@@ -10,6 +10,33 @@ import pytz
 import configparser
 from config_reader import obter_headers_api, ler_token_config, ler_codigo_empresa_filtro
 
+ARQUIVO_FUNCIONARIOS_IGNORAR = "funcionarios_ignorar.txt"
+
+
+def carregar_cpfs_funcionarios_ignorar(caminho=ARQUIVO_FUNCIONARIOS_IGNORAR):
+    """
+    Lê CPFs a ignorar no CSV de funcionários.
+    Formato por linha: CPF;NOME  (nome opcional). # e linhas vazias são ignorados.
+    """
+    if not os.path.exists(caminho):
+        return set()
+
+    cpfs = set()
+    try:
+        with open(caminho, "r", encoding="utf-8") as f:
+            for linha in f:
+                texto = linha.strip()
+                if not texto or texto.startswith("#"):
+                    continue
+                # Aceita CPF;NOME ou só CPF
+                parte_cpf = texto.split(";", 1)[0].strip()
+                cpf = formatar_cpf_11_digitos(parte_cpf)
+                if len(cpf) == 11:
+                    cpfs.add(cpf)
+    except OSError as e:
+        print(f"⚠️  Não foi possível ler {caminho}: {e}")
+    return cpfs
+
 
 def salvar_dataframe_csv_funcionarios(df, nome_preferido="funcionarios_api.csv"):
     """
@@ -755,12 +782,28 @@ def gerar_csv_funcionarios():
         return
     
     print(f"\n🔄 Convertendo {len(funcionarios_api)} funcionários ATIVOS para formato CSV...")
+
+    cpfs_ignorar = carregar_cpfs_funcionarios_ignorar()
+    if cpfs_ignorar:
+        print(
+            f"🚫 Lista de exclusão ativa ({ARQUIVO_FUNCIONARIOS_IGNORAR}): "
+            f"{len(cpfs_ignorar)} CPF(s)"
+        )
     
     funcionarios_csv = []
     erros = []
+    ignorados = 0
     
     for i, funcionario_api in enumerate(funcionarios_api, 1):
         try:
+            attrs = funcionario_api.get("attributes") or {}
+            cpf_api = formatar_cpf_11_digitos(attrs.get("cpf", ""))
+            if cpf_api and cpf_api in cpfs_ignorar:
+                ignorados += 1
+                nome_ign = (attrs.get("nome") or "").strip()
+                print(f"  🚫 Ignorado (lista): {nome_ign or cpf_api} | CPF {cpf_api}")
+                continue
+
             funcionario_csv = mapear_funcionario_para_csv(
                 funcionario_api, headers, included_global
             )
@@ -787,6 +830,7 @@ def gerar_csv_funcionarios():
 
     print(f"\n📈 ESTATÍSTICAS:")
     print(f"  📊 Total de funcionários processados: {len(funcionarios_csv)}")
+    print(f"  🚫 Ignorados pela lista: {ignorados}")
     print(f"  ❌ Erros de conversão: {len(erros)}")
     print(f"  📋 Colunas no CSV: {len(df.columns)}")
     
