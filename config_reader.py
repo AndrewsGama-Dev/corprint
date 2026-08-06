@@ -129,3 +129,23 @@ def ler_modulos_habilitados():
 def modulo_habilitado(nome_modulo):
     """Retorna True se o módulo deve ser executado conforme [MODULOS]."""
     return bool(ler_modulos_habilitados().get(nome_modulo, True))
+
+
+def historico_demissoes_habilitado():
+    """
+    Lê [FILTROS].historico_demissoes (true/false).
+
+    true  = usa demissoes_matricula_processados.txt (padrão)
+    false = não lê nem grava o histórico (reprocessa demissões)
+    """
+    try:
+        config = ler_config()
+        if not config or 'FILTROS' not in config:
+            return True
+        return _parse_bool_config(
+            config['FILTROS'].get('historico_demissoes'),
+            default=True,
+        )
+    except Exception as e:
+        print(f"❌ Erro ao ler historico_demissoes do .config: {e}")
+        return True

@@ -6,7 +6,12 @@ import time
 import configparser
 import xml.etree.ElementTree as ET
 import os
-from config_reader import obter_headers_api, ler_token_config, ler_config
+from config_reader import (
+    obter_headers_api,
+    ler_token_config,
+    ler_config,
+    historico_demissoes_habilitado,
+)
 from funcionarios import gerar_token_target, formatar_cpf_11_digitos
 
 NOME_ARQUIVO_CSV = "demissoes_api.csv"
@@ -56,6 +61,12 @@ def formatar_cpf_com_mascara_csv(cpf):
 
 
 def carregar_matriculas_demissoes_processadas():
+    if not historico_demissoes_habilitado():
+        print(
+            f"Historico de demissoes DESLIGADO ([FILTROS] historico_demissoes=false) — "
+            f"ignorando {ARQUIVO_HISTORICO_MATRICULAS}."
+        )
+        return set()
     if not os.path.exists(ARQUIVO_HISTORICO_MATRICULAS):
         return set()
     matriculas = set()
@@ -71,6 +82,11 @@ def carregar_matriculas_demissoes_processadas():
 
 
 def registrar_matriculas_demissoes_processadas(matriculas_novas):
+    if not historico_demissoes_habilitado():
+        print(
+            f"Historico de demissoes DESLIGADO — nao gravando {ARQUIVO_HISTORICO_MATRICULAS}."
+        )
+        return
     novas = []
     for matricula in matriculas_novas:
         norm = formatar_matricula_simples(matricula)
@@ -78,7 +94,17 @@ def registrar_matriculas_demissoes_processadas(matriculas_novas):
             novas.append(norm)
     if not novas:
         return
-    atual = carregar_matriculas_demissoes_processadas()
+    # Carrega do arquivo direto (sem o early-return do flag) para unificar
+    atual = set()
+    if os.path.exists(ARQUIVO_HISTORICO_MATRICULAS):
+        try:
+            with open(ARQUIVO_HISTORICO_MATRICULAS, "r", encoding="utf-8") as f:
+                for linha in f:
+                    mat = formatar_matricula_simples(linha.strip())
+                    if mat:
+                        atual.add(mat)
+        except OSError as e:
+            print(f"AVISO: nao foi possivel ler {ARQUIVO_HISTORICO_MATRICULAS}: {e}")
     atual.update(novas)
     try:
         with open(ARQUIVO_HISTORICO_MATRICULAS, "w", encoding="utf-8") as f:
