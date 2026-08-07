@@ -133,19 +133,27 @@ def modulo_habilitado(nome_modulo):
 
 def historico_demissoes_habilitado():
     """
-    Lê [FILTROS].historico_demissoes (true/false).
+    Lê historico_demissoes (true/false).
 
+    Ordem: [FILTROS] e, se não existir, [MODULOS] (compatibilidade).
     true  = usa demissoes_matricula_processados.txt (padrão)
     false = não lê nem grava o histórico (reprocessa demissões)
     """
     try:
         config = ler_config()
-        if not config or 'FILTROS' not in config:
+        if not config:
             return True
-        return _parse_bool_config(
-            config['FILTROS'].get('historico_demissoes'),
-            default=True,
-        )
+
+        valor = None
+        if 'FILTROS' in config and 'historico_demissoes' in config['FILTROS']:
+            valor = config['FILTROS'].get('historico_demissoes')
+        elif 'MODULOS' in config and 'historico_demissoes' in config['MODULOS']:
+            valor = config['MODULOS'].get('historico_demissoes')
+
+        if valor is None:
+            return True
+
+        return _parse_bool_config(valor, default=True)
     except Exception as e:
         print(f"❌ Erro ao ler historico_demissoes do .config: {e}")
         return True
