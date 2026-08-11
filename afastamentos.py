@@ -10,7 +10,55 @@ import pytz
 import configparser
 import csv
 import io
-from config_reader import obter_headers_api, ler_token_config
+import unicodedata
+import re
+from config_reader import obter_headers_api, ler_token_config, ler_codigos_afastamento
+
+
+def _normalizar_texto_afastamento(texto):
+    """Minusculo, sem acento, espacos colapsados — para casar descricao com chave do .config."""
+    if not texto:
+        return ""
+    t = unicodedata.normalize("NFKD", str(texto))
+    t = "".join(c for c in t if not unicodedata.combining(c))
+    t = t.lower().strip()
+    t = re.sub(r"\s+", " ", t)
+    return t
+
+
+# Ordem importa: regras mais especificas primeiro
+_REGRAS_TIPO_AFASTAMENTO = (
+    (("ferias",), "ferias"),
+    (("atestado",), "atestado"),
+    (("beneficio",), "beneficio"),
+    (("licenca remunerada",), "licenca_remunerada"),
+    (("salario maternidade", "maternidade"), "salario_maternidade"),
+    (("licenca paternidade", "paternidade"), "licenca_paternidade"),
+    (("licenca sem remuneracao", "sem remuneracao"), "licenca_sem_remuneracao"),
+    (("s.a.t", "sat"), "sat"),
+    (("suspensao",), "suspensao_contrato"),
+    (("aposentadoria",), "aposentadoria_invalidez"),
+    (("servico militar", "militar"), "servico_militar"),
+    (("outros motivos", "outros"), "outros"),
+)
+
+
+def resolver_codigo_afastamento(descricao):
+    """
+    Converte afastamentodescricao (eContador) no ID-AFASTAMENTO (ifPonto)
+    conforme [AFASTAMENTOS] no .config.
+    """
+    codigos = ler_codigos_afastamento()
+    padrao = codigos.get("codigo_padrao") or codigos.get("outros") or "1022"
+    obs = _normalizar_texto_afastamento(descricao)
+    if not obs:
+        return padrao, "codigo_padrao"
+
+    for termos, chave in _REGRAS_TIPO_AFASTAMENTO:
+        if any(termo in obs for termo in termos):
+            return codigos.get(chave, padrao), chave
+
+    return padrao, "codigo_padrao"
 
 def carregar_configuracoes():
     """Funcao para carregar configuracoes do arquivo .config"""
@@ -281,24 +329,12 @@ def mapear_afastamento_para_csv(funcionario_api):
     
     afastamento_desc = attributes.get('afastamentodescricao', '')
     codigo_funcionario = attributes.get('codigo', funcionario_id)
-    
-    # DEFINIR ID-AFASTAMENTO BASEADO NO CONTEUDO DO OBS
-    obs_normalizada = afastamento_desc.lower().strip() if afastamento_desc else ''
-    
+
+    codigo_afastamento, chave_tipo = resolver_codigo_afastamento(afastamento_desc)
+
     print(f"\nMapeando funcionario {codigo_funcionario}")
     print(f"    Descricao original: '{afastamento_desc}'")
-    print(f"    Descricao normalizada: '{obs_normalizada}'")
-    
-    if 'ferias' in obs_normalizada or 'férias' in obs_normalizada or 'fÃ©rias' in obs_normalizada:
-        codigo_afastamento = '1011'  # Ferias
-        print(f"    >>> DETECTADO: Ferias -> ID 1011")
-    elif 'atestado' in obs_normalizada:
-        codigo_afastamento = '1012'  # Atestado
-        print(f"    >>> DETECTADO: Atestado -> ID 1012")
-    else:
-        codigo_afastamento = '1012'  # Default para outros tipos de afastamento
-        print(f"    >>> DEFAULT: Outro tipo -> ID 1012")
-    
+    print(f"    Tipo (.config): {chave_tipo} -> ID-AFASTAMENTO {codigo_afastamento}")
     print(f"    ID-Afastamento FINAL: {codigo_afastamento}")
     
     # USAR CAMPOS CORRETOS DIRETAMENTE

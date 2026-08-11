@@ -131,6 +131,45 @@ def modulo_habilitado(nome_modulo):
     return bool(ler_modulos_habilitados().get(nome_modulo, True))
 
 
+# Chaves da seção [AFASTAMENTOS] e valores padrão (ifPonto)
+CODIGOS_AFASTAMENTO_PADRAO = {
+    'codigo_padrao': '1022',
+    'ferias': '1011',
+    'atestado': '1012',
+    'beneficio': '1013',
+    'licenca_remunerada': '1014',
+    'salario_maternidade': '1015',
+    'sat': '1016',
+    'suspensao_contrato': '1017',
+    'licenca_sem_remuneracao': '1018',
+    'aposentadoria_invalidez': '1019',
+    'servico_militar': '1020',
+    'licenca_paternidade': '1021',
+    'outros': '1022',
+}
+
+
+def ler_codigos_afastamento():
+    """
+    Lê [AFASTAMENTOS] do .config (código ifPonto por tipo).
+    Se a seção/chave não existir, usa os padrões sequenciais (1011+).
+    """
+    codigos = dict(CODIGOS_AFASTAMENTO_PADRAO)
+    try:
+        config = ler_config()
+        if not config or 'AFASTAMENTOS' not in config:
+            return codigos
+
+        secao = config['AFASTAMENTOS']
+        for chave in codigos:
+            if chave in secao and str(secao.get(chave) or '').strip():
+                codigos[chave] = str(secao.get(chave)).strip().strip('"')
+        return codigos
+    except Exception as e:
+        print(f"❌ Erro ao ler [AFASTAMENTOS] do .config: {e}")
+        return codigos
+
+
 def historico_demissoes_habilitado():
     """
     Lê historico_demissoes (true/false).
