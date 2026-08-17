@@ -20,7 +20,6 @@ ARQUIVO_HISTORICO_MATRICULAS = "demissoes_matricula_processados.txt"
 COLUNAS_CSV_DEMISSOES = [
     "campo_chave",
     "cpf",
-    "matricula",
     "nome",
     "DATA_DEMISSAO",
     "obs",
@@ -44,16 +43,16 @@ def formatar_matricula_simples(codigo):
 
 
 def ler_campo_chave_config():
-    """Chave de identificacao no ifPonto. Padrao: matricula."""
+    """Chave de identificacao no ifPonto. Padrao: cpf."""
     cfg = ler_config()
     if cfg and "APITARGET" in cfg:
-        chave = (cfg["APITARGET"].get("campo_chave") or "matricula").strip().strip('"').strip("'")
-        return chave.lower() if chave else "matricula"
-    return "matricula"
+        chave = (cfg["APITARGET"].get("campo_chave") or "cpf").strip().strip('"').strip("'")
+        return chave.lower() if chave else "cpf"
+    return "cpf"
 
 
 def formatar_cpf_com_mascara_csv(cpf):
-    """CPF opcional no CSV (XXX.XXX.XXX-XX). Nao e usado como chave nesta integracao."""
+    """CPF no CSV (XXX.XXX.XXX-XX). Usado como campo_chave nesta integracao."""
     digitos = formatar_cpf_11_digitos(cpf)
     if len(digitos) != 11:
         return ""
@@ -128,23 +127,23 @@ def ler_pag_demissao_rest():
 
 
 def preparar_csv_para_rest(nome_arquivo_csv=NOME_ARQUIVO_CSV):
-    """Garante colunas exigidas pelo REST e matricula com 6 digitos."""
+    """Garante colunas exigidas pelo REST (chave = cpf; sem coluna matricula)."""
     df = pd.read_csv(nome_arquivo_csv, sep=";", encoding="utf-8-sig", dtype=str)
     df = df.fillna("")
 
+    campo_chave = ler_campo_chave_config()
     if "campo_chave" not in df.columns:
-        df.insert(0, "campo_chave", ler_campo_chave_config())
+        df.insert(0, "campo_chave", campo_chave)
     else:
-        df["campo_chave"] = df["campo_chave"].replace("", ler_campo_chave_config())
+        df["campo_chave"] = campo_chave
 
     if "cpf" not in df.columns:
         df.insert(1, "cpf", "")
     if "nome" not in df.columns:
-        pos = df.columns.get_loc("matricula") + 1 if "matricula" in df.columns else 1
-        df.insert(pos, "nome", "")
+        df.insert(2, "nome", "")
 
     if "matricula" in df.columns:
-        df["matricula"] = df["matricula"].apply(formatar_matricula_simples)
+        df = df.drop(columns=["matricula"])
 
     for coluna in COLUNAS_CSV_DEMISSOES:
         if coluna not in df.columns:
@@ -385,7 +384,7 @@ def calcular_datas_demissao(data_demissao_iso):
 def mapear_demissao_para_csv(funcionario_demitido, headers=None):
     """
     Mapeia funcionario demitido da API para o CSV de demissao (REST ifPonto).
-    Chave de integracao: matricula (codigo Alterdata, 6 digitos).
+    Chave de integracao no CSV: cpf. Matricula fica so no controle interno/historico.
     """
     attributes = funcionario_demitido.get("attributes", {})
     funcionario_id = funcionario_demitido.get("id", "")
@@ -692,7 +691,7 @@ def gerar_csv_demissoes():
         demissoes_filtradas = funcionarios_demitidos
     
     print(f"\n🔄 Convertendo {len(demissoes_filtradas)} demissões para formato CSV...")
-    print(f"   Chave de integracao: {ler_campo_chave_config()} | matricula = codigo Alterdata (6 digitos)")
+    print(f"   Chave de integracao no CSV: {ler_campo_chave_config()} (sem coluna matricula)")
 
     matriculas_ja_exportadas = carregar_matriculas_demissoes_processadas()
     print(
@@ -716,10 +715,12 @@ def gerar_csv_demissoes():
                 ignorados_historico += 1
                 continue
 
-            if matricula:
+            cpf_ok = formatar_cpf_11_digitos(demissao_csv.get("cpf", ""))
+            if cpf_ok or matricula:
                 demissoes_csv.append(demissao_csv)
-                funcionarios_processados.add(matricula)
-                matriculas_para_registrar.append(matricula)
+                funcionarios_processados.add(cpf_ok or matricula)
+                if matricula:
+                    matriculas_para_registrar.append(matricula)
 
             if i % 10 == 0:
                 print(
@@ -801,7 +802,7 @@ def validar_dados_demissoes_csv(nome_arquivo):
         print(f"  📋 Total de colunas: {len(df.columns)}")
         
         # Verificar campos obrigatórios
-        campos_obrigatorios = ['matricula', 'DATA_DEMISSAO']
+        campos_obrigatorios = ['cpf', 'DATA_DEMISSAO']
         
         for campo in campos_obrigatorios:
             if campo in df.columns:
@@ -821,13 +822,13 @@ def validar_dados_demissoes_csv(nome_arquivo):
                 print(f"  📅 {campo}: {registros_com_data} registros com data")
         
         # Verificar funcionários únicos
-        if "matricula" in df.columns:
-            funcionarios_unicos = df["matricula"].nunique()
-            print(f"  👥 Funcionários únicos demitidos: {funcionarios_unicos}")
+        if "cpf" in df.columns:
+            funcionarios_unicos = df["cpf"].nunique()
+            print(f"  👥 Funcionários únicos demitidos (CPF): {funcionarios_unicos}")
 
         if "campo_chave" in df.columns:
             chaves = df["campo_chave"].fillna("").astype(str).str.strip().unique()
-            print(f"  🔑 campo_chave no CSV: {', '.join(ch for ch in chaves if ch) or 'matricula'}")
+            print(f"  🔑 campo_chave no CSV: {', '.join(ch for ch in chaves if ch) or 'cpf'}")
         
         print(f"  ✅ Validação concluída")
         
