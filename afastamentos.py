@@ -12,7 +12,23 @@ import csv
 import io
 import unicodedata
 import re
-from config_reader import obter_headers_api, ler_token_config, ler_codigos_afastamento
+from config_reader import (
+    obter_headers_api,
+    ler_token_config,
+    ler_config,
+    ler_codigos_afastamento,
+    ler_codigo_empresa_filtro,
+)
+from funcionarios import formatar_cpf_11_digitos
+
+
+def ler_campo_chave_afastamento():
+    """Chave de identificacao no ifPonto. Padrao: cpf."""
+    cfg = ler_config()
+    if cfg and "APITARGET" in cfg:
+        chave = (cfg["APITARGET"].get("campo_chave") or "cpf").strip().strip('"').strip("'")
+        return chave.lower() if chave else "cpf"
+    return "cpf"
 
 
 def _normalizar_texto_afastamento(texto):
@@ -265,9 +281,14 @@ def consultar_funcionarios_com_afastamentos():
     base_url = "https://dp.pack.alterdata.com.br/api/v1/funcionarios"
     
     params = {
-        "fields": "codigo,nome,afastamento,afastamentodescricao,status,retorno",
-        "sort": "codigo"
+        "fields": "codigo,nome,cpf,afastamento,afastamentodescricao,status,retorno",
+        "sort": "codigo",
+        "page[limit]": "100",
     }
+    codigo_empresa = ler_codigo_empresa_filtro()
+    if codigo_empresa:
+        params["filter[empresa.id]"] = codigo_empresa
+        print(f"Filtro de empresa ativo: codigo_empresa={codigo_empresa}")
     
     funcionarios_com_afastamento = []
     url_atual = base_url
@@ -292,18 +313,15 @@ def consultar_funcionarios_com_afastamentos():
                     afastamento_desc_raw = attributes.get('afastamentodescricao', '')
                     afastamento_desc = afastamento_desc_raw.lower() if afastamento_desc_raw else ''
                     
-                    # Se tem afastamento ativo ou descricao de afastamento, MAS NAO EH FERIAS
-                    if (afastamento is not None or (afastamento_desc and afastamento_desc.strip())) and 'ferias' not in afastamento_desc:
-                        
+                    # Se tem afastamento ativo ou descricao de afastamento
+                    if afastamento is not None or (afastamento_desc and afastamento_desc.strip()):
                         print(f"\n  Funcionario {attributes.get('codigo', 'N/A')} - {afastamento_desc_raw}")
                         funcionarios_com_afastamento.append(funcionario)
                 
-                afastamentos_nao_ferias = len([f for f in funcionarios_pagina 
-                                             if f.get('attributes', {}).get('afastamentodescricao') 
-                                             and 'ferias' not in (f.get('attributes', {}).get('afastamentodescricao') or '').lower()
-                                             and (f.get('attributes', {}).get('afastamentodescricao') or '').strip()])
+                com_desc = len([f for f in funcionarios_pagina
+                               if (f.get('attributes', {}).get('afastamentodescricao') or '').strip()])
                 
-                print(f"{len(funcionarios_pagina)} funcionarios ({afastamentos_nao_ferias} com afastamento nao-ferias)")
+                print(f"{len(funcionarios_pagina)} funcionarios ({com_desc} com descricao de afastamento)")
                 
                 url_atual = data.get('links', {}).get('next')
                 pagina += 1
@@ -329,12 +347,15 @@ def mapear_afastamento_para_csv(funcionario_api):
     
     afastamento_desc = attributes.get('afastamentodescricao', '')
     codigo_funcionario = attributes.get('codigo', funcionario_id)
+    cpf = formatar_cpf_11_digitos(attributes.get('cpf', ''))
+    campo_chave = ler_campo_chave_afastamento()
 
     codigo_afastamento, chave_tipo = resolver_codigo_afastamento(afastamento_desc)
 
     print(f"\nMapeando funcionario {codigo_funcionario}")
     print(f"    Descricao original: '{afastamento_desc}'")
     print(f"    Tipo (.config): {chave_tipo} -> ID-AFASTAMENTO {codigo_afastamento}")
+    print(f"    Chave: {campo_chave} | CPF: {cpf}")
     print(f"    ID-Afastamento FINAL: {codigo_afastamento}")
     
     # USAR CAMPOS CORRETOS DIRETAMENTE
@@ -347,14 +368,14 @@ def mapear_afastamento_para_csv(funcionario_api):
         dtfim = dtfim or 'SEM_DATA_API'
         origem_data = 'ERRO_API'
     
-    # Mapeamento final - OBS agora contem apenas a descricao
+    # Mapeamento final - chave de integracao = cpf (sem coluna matricula)
     afastamento_csv = {
         'ID-AFASTAMENTO': codigo_afastamento,
         'DTINICIO': dtinicio,
         'DTFIM': dtfim,
         'OBS': afastamento_desc if afastamento_desc else 'Afastamento',
-        'CAMPO_CHAVE': 'matricula',
-        'MATRICULA': codigo_funcionario
+        'CAMPO_CHAVE': campo_chave,
+        'CPF': cpf
     }
     
     return afastamento_csv
@@ -385,16 +406,12 @@ def gerar_csv_afastamentos():
     for funcionario_api in funcionarios_afastamento:
         try:
             afastamento_csv = mapear_afastamento_para_csv(funcionario_api)
-            
-            obs = afastamento_csv['OBS'].lower()
-            if 'ferias' not in obs:
-                afastamentos_csv.append(afastamento_csv)
-                
-                # Contar sucessos
-                if afastamento_csv['DTINICIO'] != 'SEM_DATA_API' and afastamento_csv['DTFIM'] != 'SEM_DATA_API':
-                    funcionarios_com_datas_reais += 1
-                else:
-                    funcionarios_sem_datas += 1
+            afastamentos_csv.append(afastamento_csv)
+
+            if afastamento_csv['DTINICIO'] != 'SEM_DATA_API' and afastamento_csv['DTFIM'] != 'SEM_DATA_API':
+                funcionarios_com_datas_reais += 1
+            else:
+                funcionarios_sem_datas += 1
                     
         except Exception as e:
             print(f"Erro ao processar funcionario: {e}")
@@ -433,7 +450,7 @@ def processar_integracao_completa():
             df = pd.read_csv('afastamentos_api.csv', sep=';')
             print(f"\nREGISTROS GERADOS ({len(df)} total):")
             for i, row in df.iterrows():
-                print(f"   {row['matricula']}: {row['dtinicio']} a {row['dtfim']} | {row['obs']}")
+                print(f"   {row.get('cpf', '')}: {row['dtinicio']} a {row['dtfim']} | {row['obs']}")
                 
         except Exception as e:
             print(f"Erro ao ler CSV: {e}")
@@ -467,7 +484,7 @@ if __name__ == "__main__":
                         df = pd.read_csv('afastamentos_api.csv', sep=';')
                         print(f"\nTODOS OS REGISTROS ({len(df)}):")
                         for i, row in df.iterrows():
-                            print(f"   {row['matricula']}: {row['dtinicio']} a {row['dtfim']} | {row['obs']}")
+                            print(f"   {row.get('cpf', '')}: {row['dtinicio']} a {row['dtfim']} | {row['obs']}")
                             
                     except Exception as e:
                         print(f"Erro ao analisar CSV: {e}")
