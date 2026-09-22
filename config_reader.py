@@ -152,22 +152,25 @@ CODIGOS_AFASTAMENTO_PADRAO = {
 def ler_codigos_afastamento():
     """
     Lê [AFASTAMENTOS] do .config (código ifPonto por tipo).
-    Se a seção/chave não existir, usa os padrões sequenciais (1011+).
+
+    Só entram chaves descomentadas. Linha com # no início desliga aquele tipo.
+    Se a seção não existir, usa todos os padrões (compatibilidade).
+    Se a seção existir e todas as linhas estiverem comentadas, retorna {}.
     """
-    codigos = dict(CODIGOS_AFASTAMENTO_PADRAO)
     try:
         config = ler_config()
         if not config or 'AFASTAMENTOS' not in config:
-            return codigos
+            return dict(CODIGOS_AFASTAMENTO_PADRAO)
 
         secao = config['AFASTAMENTOS']
-        for chave in codigos:
+        codigos = {}
+        for chave in CODIGOS_AFASTAMENTO_PADRAO:
             if chave in secao and str(secao.get(chave) or '').strip():
                 codigos[chave] = str(secao.get(chave)).strip().strip('"')
         return codigos
     except Exception as e:
         print(f"❌ Erro ao ler [AFASTAMENTOS] do .config: {e}")
-        return codigos
+        return dict(CODIGOS_AFASTAMENTO_PADRAO)
 
 
 def historico_demissoes_habilitado():

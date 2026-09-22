@@ -62,19 +62,30 @@ _REGRAS_TIPO_AFASTAMENTO = (
 def resolver_codigo_afastamento(descricao):
     """
     Converte afastamentodescricao (eContador) no ID-AFASTAMENTO (ifPonto)
-    conforme [AFASTAMENTOS] no .config.
+    conforme tipos ATIVOS em [AFASTAMENTOS] no .config.
+
+    Returns:
+        (codigo, chave) ou (None, chave) se o tipo estiver comentado/# desligado.
     """
     codigos = ler_codigos_afastamento()
-    padrao = codigos.get("codigo_padrao") or codigos.get("outros") or "1022"
     obs = _normalizar_texto_afastamento(descricao)
-    if not obs:
-        return padrao, "codigo_padrao"
+    chave = None
+    if obs:
+        for termos, nome_chave in _REGRAS_TIPO_AFASTAMENTO:
+            if any(termo in obs for termo in termos):
+                chave = nome_chave
+                break
 
-    for termos, chave in _REGRAS_TIPO_AFASTAMENTO:
-        if any(termo in obs for termo in termos):
-            return codigos.get(chave, padrao), chave
+    if chave is None:
+        if "codigo_padrao" in codigos:
+            return codigos["codigo_padrao"], "codigo_padrao"
+        if "outros" in codigos:
+            return codigos["outros"], "outros"
+        return None, "desconhecido"
 
-    return padrao, "codigo_padrao"
+    if chave not in codigos:
+        return None, chave
+    return codigos[chave], chave
 
 def carregar_configuracoes():
     """Funcao para carregar configuracoes do arquivo .config"""
@@ -354,6 +365,10 @@ def mapear_afastamento_para_csv(funcionario_api):
 
     print(f"\nMapeando funcionario {codigo_funcionario}")
     print(f"    Descricao original: '{afastamento_desc}'")
+    if codigo_afastamento is None:
+        print(f"    Tipo '{chave_tipo}' DESLIGADO no .config (#) — nao entra no CSV")
+        return None
+
     print(f"    Tipo (.config): {chave_tipo} -> ID-AFASTAMENTO {codigo_afastamento}")
     print(f"    Chave: {campo_chave} | CPF: {cpf}")
     print(f"    ID-Afastamento FINAL: {codigo_afastamento}")
@@ -392,6 +407,16 @@ def gerar_csv_afastamentos():
         return None
     
     print("\n1. Consultando afastamentos na API Alterdata...")
+    tipos_ativos = ler_codigos_afastamento()
+    if tipos_ativos:
+        print("   Tipos ATIVOS no .config [AFASTAMENTOS]:")
+        for chave, codigo in tipos_ativos.items():
+            print(f"     - {chave} = {codigo}")
+        print("   (Comente a linha com # para nao enviar aquele tipo.)")
+    else:
+        print("   Nenhum tipo ativo em [AFASTAMENTOS] (todas as linhas comentadas).")
+        return []
+
     funcionarios_afastamento, headers = consultar_funcionarios_com_afastamentos()
     
     if not funcionarios_afastamento:
@@ -402,10 +427,14 @@ def gerar_csv_afastamentos():
     afastamentos_csv = []
     funcionarios_com_datas_reais = 0
     funcionarios_sem_datas = 0
+    ignorados_tipo = 0
     
     for funcionario_api in funcionarios_afastamento:
         try:
             afastamento_csv = mapear_afastamento_para_csv(funcionario_api)
+            if not afastamento_csv:
+                ignorados_tipo += 1
+                continue
             afastamentos_csv.append(afastamento_csv)
 
             if afastamento_csv['DTINICIO'] != 'SEM_DATA_API' and afastamento_csv['DTFIM'] != 'SEM_DATA_API':
@@ -420,6 +449,7 @@ def gerar_csv_afastamentos():
     print(f"\nRESULTADO:")
     print(f"   Funcionarios com datas CORRETAS: {funcionarios_com_datas_reais}")
     print(f"   Funcionarios sem datas: {funcionarios_sem_datas}")
+    print(f"   Ignorados (tipo desligado no .config): {ignorados_tipo}")
     print(f"   Total de registros: {len(afastamentos_csv)}")
     
     return afastamentos_csv
@@ -431,9 +461,13 @@ def processar_integracao_completa():
     
     dados_afastamentos = gerar_csv_afastamentos()
     
-    if not dados_afastamentos:
+    if dados_afastamentos is None:
         print("Falha na coleta de dados")
         return False
+
+    if len(dados_afastamentos) == 0:
+        print("Nenhum afastamento para enviar (tipos desligados no .config ou lista vazia).")
+        return True
     
     sucesso = processar_modulo_afastamentos(
         dados_afastamentos,
